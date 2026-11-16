@@ -1,5 +1,11 @@
 # VIGIL // FOUNDRY
 
+[![make.fun · best-game-01](https://make.fun/badge/best-game-01.svg)](https://make.fun/bounty/best-game-01?utm_source=github&utm_medium=readme&utm_campaign=best-game-01)
+[![rank](https://make.fun/badge/best-game-01/HadiSH304/best-game-01-entry-vigil/rank.svg)](https://make.fun/bounty/best-game-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=best-game-01)
+[![reward](https://make.fun/badge/best-game-01/HadiSH304/best-game-01-entry-vigil/reward.svg)](https://make.fun/bounty/best-game-01?utm_source=github&utm_medium=readme&utm_campaign=best-game-01)
+
+Entered in [make.fun's best-game-01 bounty](https://make.fun/bounty/best-game-01).
+
 A 5v5 round-based tactical FPS that runs entirely offline in a desktop
 browser. Ember Jackals attack — plant the charge at Site A or Site B, or
 eliminate the Harbor Wardens. First team to 9 rounds wins; sides swap at
