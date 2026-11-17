@@ -1,283 +1,308 @@
-// hud.js — every DOM surface.
+// HUD + screens, all drawn in canvas so the screenshots are exactly
+// what the player sees: top bar (NIGHT n / 7, Voice, gold, CHORD combo,
+// grade), WIN/LOSE objective lines with live progress, right panel
+// (INCOMING / BELLS RUNG / COMPANION), boss bar, bottom build bar, the
+// one-line how-to strip, the build menu, the title screen with its HOW
+// TO PLAY panel, and the results screen.
+import { W, H, FONT, panel, roundRect } from './render.js';
+import { BELL_TYPES, BELL_ORDER, UPGRADE_MULT, SELL_REFUND } from './bells.js';
+import { WRAITH_TYPES } from './wraiths.js';
+import { PADS } from './game.js';
 
-import { WEAPONS, UTILITY, ECONOMY, TIMERS } from './config.js';
+export const HOWTO = 'Place bells on rune pads — two rings on one wraith = CHORD x2 — stop every wraith before the Great Bell';
 
-export class HUD {
-  constructor(game) {
-    this.game = game;
-    this.el = {};
-    for (const id of ['hud', 'topbar', 'crosshair', 'hitmarker', 'killfeed', 'radio',
-      'radar', 'radarLabel', 'slots', 'utility', 'health', 'armor', 'ammo', 'money',
-      'timer', 'score', 'pips', 'roundLabel', 'planLabel', 'roleLabel', 'banner',
-      'deploy', 'buy', 'scoreboard', 'aar', 'damageArc', 'flashOverlay', 'hint',
-      'bossBar', 'coreBar']) {
-      this.el[id] = document.getElementById(id);
-    }
-    this.radarCtx = this.el.radar?.getContext('2d');
-    this.blips = [];
-    this.feed = [];
-    this.radioLines = [];
-    this.sensitivity = 1.0;
-  }
+function text(ctx, s, x, y, size, color, weight = 700, align = 'left') {
+  ctx.save();
+  ctx.font = `${weight} ${size}px ${FONT}`;
+  ctx.fillStyle = color;
+  ctx.textAlign = align;
+  ctx.textBaseline = 'alphabetic';
+  ctx.fillText(s, x, y);
+  ctx.restore();
+}
 
-  setTopBar(round, scoreA, scoreD, phase) {
-    this.el.roundLabel.textContent = `ROUND ${round} OF ${TIMERS.maxRounds}`;
-    this.el.score.textContent = `${scoreA} — ${scoreD}`;
-    const pips = (n, color) => Array.from({ length: TIMERS.winRounds }, (_, i) =>
-      `<span class="pip ${i < n ? 'won' : ''}" style="--c:${color}"></span>`).join('');
-    this.el.pips.innerHTML = pips(scoreA, '#ff7a2a') + '<span class="pipSep">:</span>' + pips(scoreD, '#3fa7ff');
+function bar(ctx, x, y, w, h, frac, fill, bg = 'rgba(255,255,255,0.18)') {
+  ctx.save();
+  ctx.fillStyle = bg;
+  roundRect(ctx, x, y, w, h, h / 2);
+  ctx.fill();
+  if (frac > 0) {
+    ctx.fillStyle = fill;
+    roundRect(ctx, x, y, Math.max(h, w * Math.min(1, frac)), h, h / 2);
+    ctx.fill();
   }
-  setTimer(seconds, phase) {
-    const s = Math.max(0, Math.ceil(seconds));
-    this.el.timer.textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
-    this.el.timer.classList.toggle('urgent', s <= 10 && phase === 'live');
-  }
-  setPlan(planLabel, role) {
-    this.el.planLabel.textContent = planLabel || '';
-    this.el.roleLabel.textContent = role ? `YOUR ROLE: ${role}` : '';
-  }
+  ctx.restore();
+}
 
-  setLS(wave, coreHp) {
-    this.el.roundLabel.textContent = `WAVE ${wave} / 7`;
-    this.el.pips.innerHTML = '';
-    this.el.planLabel.textContent = 'WIN: destroy the FOUNDRY WARDEN';
-    this.el.roleLabel.textContent = 'LOSE: the Furnace Core falls';
-    this.el.timer.textContent = '—';
-    this.el.coreBar.classList.add('show');
-    this.el.bossBar.classList.remove('show');
-    this.setCore(coreHp);
+export function drawTopBar(ctx, game) {
+  panel(ctx, 0, 0, W, 56, 0.8);
+  // Left: Voice + gold.
+  text(ctx, 'VOICE', 18, 24, 13, '#c9a5ff');
+  bar(ctx, 18, 30, 170, 12, game.voice / 100, game.voice > 40 ? '#ffd76a' : '#ff6a5e');
+  text(ctx, `${game.voice}`, 196, 42, 15, '#ffffff');
+  text(ctx, `◆ ${game.gold} gold`, 240, 40, 16, '#ffd76a');
+  // Centre: counted progression + boss bar on night 7.
+  const nightLabel = game.phase === 'title' ? 'CARILLON' : `NIGHT ${Math.max(1, game.night)} / 7`;
+  text(ctx, nightLabel, W / 2, 30, 26, '#ffffff', 800, 'center');
+  if (game.boss) {
+    text(ctx, 'THE HUSH', W / 2 - 130, 50, 13, '#ff2fa0', 800, 'right');
+    bar(ctx, W / 2 - 120, 40, 240, 12, game.boss.hp / game.boss.maxHp, '#ff2fa0');
+    text(ctx, `${Math.round((game.boss.hp / game.boss.maxHp) * 100)}%`, W / 2 + 130, 52, 13, '#ff9ed2', 700, 'left');
   }
-  setCore(hp) {
-    this.el.score.textContent = `CORE ${Math.ceil(hp)}`;
-    this.el.coreBar.querySelector('i').style.width = `${Math.max(0, hp / 10)}%`;
-  }
-  setBoss(hp, max) {
-    this.el.bossBar.classList.add('show');
-    this.el.bossBar.querySelector('i').style.width = `${Math.max(0, hp / max * 100)}%`;
-  }
-  hideLS() {
-    this.el.coreBar.classList.remove('show');
-    this.el.bossBar.classList.remove('show');
-  }
+  // Right: CHORD combo + grade.
+  const combo = game.combo > 1 ? `CHORD x${game.combo}` : 'CHORD x—';
+  text(ctx, combo, W - 120, 26, 17, game.combo > 1 ? '#ffe9a0' : '#8a84a8', 800, 'right');
+  text(ctx, `GRADE ${game.grade()}`, W - 120, 46, 13, '#c9a5ff', 700, 'right');
+}
 
-  setCrosshair(spreadPx) {
-    const c = this.el.crosshair;
-    if (!c) return;
-    const gap = Math.max(3, Math.min(26, spreadPx));
-    c.style.setProperty('--gap', `${gap}px`);
-  }
-  hitmarker(headshot) {
-    const h = this.el.hitmarker;
-    if (!h) return;
-    h.classList.add('on');
-    h.classList.toggle('hs', !!headshot);
-    clearTimeout(this._hmT);
-    this._hmT = setTimeout(() => h.classList.remove('on'), 110);
-  }
-  setVitals(hp, armor, hasHelmet, money) {
-    this.el.health.textContent = Math.ceil(hp);
-    this.el.health.classList.toggle('low', hp <= 30);
-    this.el.armor.textContent = Math.ceil(armor) + (hasHelmet ? ' +H' : '');
-    this.el.money.textContent = '$' + money;
-  }
-  setAmmo(mag, reserve, weaponName) {
-    this.el.ammo.innerHTML = `<b>${mag === Infinity ? '∞' : mag}</b> / ${reserve === Infinity ? '∞' : reserve}<span>${weaponName}</span>`;
-  }
-  setSlots(loadout, currentId) {
-    this.el.slots.innerHTML = loadout.map((w) => {
-      const active = w.id === currentId ? ' active' : '';
-      return `<div class="slot${active}"><span class="key">${w.slot}</span>${w.name}</div>`;
-    }).join('');
-  }
-  setUtility(counts) {
-    this.el.utility.innerHTML = Object.entries(counts).map(([k, n]) => {
-      const u = UTILITY[k];
-      return `<div class="util"><span class="key">${u.key}</span>${u.name} ×${n}</div>`;
-    }).join('');
-  }
+export function drawObjectives(ctx, game) {
+  const bossPct = game.bossPct();
+  const winLine = game.phase === 'title'
+    ? 'WIN: ring all 7 nights'
+    : bossPct !== null
+      ? `WIN: silence THE HUSH — boss ${bossPct}%`
+      : `WIN: survive all 7 nights — nights ${game.nightsHeld}/7`;
+  const loseLine = `LOSE: the Great Bell falls silent — Voice ${game.voice}%`;
+  panel(ctx, 14, 64, 470, 26, 0.66);
+  text(ctx, winLine, 24, 82, 15, '#7dff9a');
+  panel(ctx, 14, 94, 470, 26, 0.66);
+  text(ctx, loseLine, 24, 112, 15, '#ff8a8a');
+}
 
-  killfeed(killerName, killerTeam, weaponName, victimName, victimTeam, headshot) {
-    const div = document.createElement('div');
-    div.className = 'kf';
-    div.innerHTML = `<span style="color:${killerTeam === 'attack' ? '#ff7a2a' : '#3fa7ff'}">${killerName}</span> <span class="kfW">[${weaponName}${headshot ? ' ✕' : ''}]</span> <span style="color:${victimTeam === 'attack' ? '#ff7a2a' : '#3fa7ff'}">${victimName}</span>`;
-    this.el.killfeed.prepend(div);
-    while (this.el.killfeed.children.length > 5) this.el.killfeed.lastChild.remove();
-    setTimeout(() => div.remove(), 6000);
-  }
+const TYPE_COLOR = {
+  drifter: '#9fe8ff', swift: '#a8f04a', shroud: '#a86ef0',
+  splitter: '#ff8a2a', drift: '#ffb35e', hush: '#ff2fa0',
+};
 
-  radio(name, role, text, blipPos) {
-    const div = document.createElement('div');
-    div.className = 'radioLine';
-    div.innerHTML = `<span class="radioTag">[RADIO]</span> ${name} (${role}): ${text}`;
-    this.el.radio.prepend(div);
-    while (this.el.radio.children.length > 5) this.el.radio.lastChild.remove();
-    setTimeout(() => div.remove(), 7000);
-    if (blipPos) this.blips.push({ x: blipPos.x, z: blipPos.z, until: performance.now() + 3000, color: '#ffd24a' });
+export function drawRightPanel(ctx, game) {
+  if (game.phase === 'title') return;
+  // Left column, under the WIN/LOSE pills: the right of the field stays
+  // clear for the belfry and the boss.
+  const x = 14;
+  const y = 128;
+  const w = 268;
+  let h = 34;
+  const inc = game.incoming();
+  h += inc.length * 20 + 8;
+  const held = game.bellsHeld();
+  h += 24 + Math.max(1, held.length) * 20 + 8;
+  h += 24 + 20;
+  panel(ctx, x, y, w, h, 0.7);
+  let cy = y + 22;
+  text(ctx, `INCOMING — NIGHT ${Math.max(1, game.night)}`, x + 12, cy, 13, '#ffd76a');
+  cy += 20;
+  for (const g of inc) {
+    ctx.fillStyle = TYPE_COLOR[g.type] || '#fff';
+    ctx.beginPath();
+    ctx.arc(x + 18, cy - 4, 5, 0, Math.PI * 2);
+    ctx.fill();
+    text(ctx, `${WRAITH_TYPES[g.type].name} ×${g.count}`, x + 30, cy, 14, '#ffffff', 600);
+    cy += 20;
   }
-
-  banner(text, sub = '') {
-    const b = this.el.banner;
-    b.innerHTML = `<div class="bannerMain">${text}</div><div class="bannerSub">${sub}</div>`;
-    b.classList.add('show');
-    clearTimeout(this._bnT);
-    this._bnT = setTimeout(() => b.classList.remove('show'), 3200);
-  }
-
-  damageArc(fromYaw) {
-    const a = this.el.damageArc;
-    a.style.setProperty('--rot', `${fromYaw}deg`);
-    a.classList.add('show');
-    clearTimeout(this._daT);
-    this._daT = setTimeout(() => a.classList.remove('show'), 500);
-  }
-
-  flashWhite(strength) {
-    const f = this.el.flashOverlay;
-    f.style.opacity = String(Math.min(1, strength));
-    if (strength > 0.05) {
-      clearTimeout(this._flT);
-      this._flT = setTimeout(() => { f.style.opacity = '0'; }, 700);
+  cy += 6;
+  text(ctx, 'BELLS RUNG', x + 12, cy, 13, '#ffd76a');
+  cy += 20;
+  if (held.length === 0) {
+    text(ctx, 'none yet — click a rune pad', x + 12, cy, 13, '#b9b3d6', 600);
+    cy += 20;
+  } else {
+    for (const b of held) {
+      ctx.fillStyle = BELL_TYPES[b.type].color;
+      ctx.beginPath();
+      ctx.arc(x + 18, cy - 4, 5, 0, Math.PI * 2);
+      ctx.fill();
+      text(ctx, `${BELL_TYPES[b.type].name} ×${b.count}`, x + 30, cy, 14, '#ffffff', 600);
+      cy += 20;
     }
   }
+  cy += 6;
+  text(ctx, 'COMPANION', x + 12, cy, 13, '#ffd76a');
+  cy += 20;
+  text(ctx, `PIP Lv ${game.pip.level} — nips ${game.nips}`, x + 12, cy, 14, '#ffe9c4', 600);
+}
 
-  hint(text) { this.el.hint.textContent = text || ''; }
+export function drawBuildBar(ctx, game) {
+  panel(ctx, 0, 648, W, 72, 0.8);
+  let x = 16;
+  for (let i = 0; i < BELL_ORDER.length; i++) {
+    const type = BELL_ORDER[i];
+    const t = BELL_TYPES[type];
+    const w = 132;
+    const selected = game.menuType === type;
+    ctx.save();
+    ctx.fillStyle = selected ? 'rgba(255, 215, 106, 0.22)' : 'rgba(255,255,255,0.06)';
+    ctx.strokeStyle = selected ? '#ffd76a' : 'rgba(255,255,255,0.25)';
+    ctx.lineWidth = selected ? 2 : 1;
+    roundRect(ctx, x, 658, w, 52, 8);
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+    ctx.fillStyle = t.color;
+    ctx.beginPath();
+    ctx.arc(x + 16, 684, 7, 0, Math.PI * 2);
+    ctx.fill();
+    text(ctx, `${i + 1} ${t.name}`, x + 30, 678, 15, '#ffffff');
+    text(ctx, `${t.cost}g`, x + 30, 698, 13, '#ffd76a', 600);
+    x += w + 10;
+  }
+  // Start-night / status button on the right.
+  const bx = W - 250;
+  const by = 658;
+  const bw = 234;
+  const bh = 52;
+  const canStart = game.phase === 'build';
+  ctx.save();
+  ctx.fillStyle = canStart ? '#2f7a4a' : 'rgba(255,255,255,0.10)';
+  ctx.strokeStyle = canStart ? '#7dff9a' : 'rgba(255,255,255,0.25)';
+  ctx.lineWidth = 2;
+  roundRect(ctx, bx, by, bw, bh, 8);
+  ctx.fill();
+  ctx.stroke();
+  ctx.restore();
+  text(ctx, canStart ? `▶  START NIGHT ${game.night}` : `NIGHT ${Math.max(1, game.night)} — FIGHTING…`, bx + bw / 2, by + 33, 17, canStart ? '#ffffff' : '#b9b3d6', 800, 'center');
+}
 
-  drawRadar(mapDef, player, actors, smokes) {
-    const ctx = this.radarCtx;
-    if (!ctx || !mapDef) return;
-    const W = 190, H = 150;
-    const bx = mapDef.bounds.x, bz = mapDef.bounds.z;
-    const sx = W / (bx * 2), sz = H / (bz * 2);
-    const X = (x) => (x + bx) * sx;
-    const Z = (z) => (z + bz) * sz;
-    ctx.clearRect(0, 0, W, H);
-    ctx.fillStyle = 'rgba(12,12,14,0.85)';
-    ctx.fillRect(0, 0, W, H);
-    ctx.fillStyle = '#2c2a26';
-    ctx.fillRect(2, 2, W - 4, H - 4);
-    ctx.fillStyle = '#5d564a';
-    for (const w of mapDef.walls) ctx.fillRect(X(w.x - w.w / 2), Z(w.z - w.d / 2), w.w * sx, w.d * sz);
-    ctx.fillStyle = '#7a6a42';
-    for (const c of mapDef.crates) ctx.fillRect(X(c.x - c.w / 2), Z(c.z - c.d / 2), c.w * sx, c.d * sz);
-    for (const key of ['A', 'B']) {
-      const s = mapDef.sites[key];
-      ctx.fillStyle = key === 'A' ? '#ff7a2a' : '#3fa7ff';
-      ctx.fillRect(X(s.x) - 10, Z(s.z) - 9, 20, 18);
-      ctx.fillStyle = '#101010';
-      ctx.font = 'bold 13px monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-      ctx.fillText(key, X(s.x), Z(s.z) + 0.5);
+export function drawHowTo(ctx) {
+  panel(ctx, 0, 620, W, 24, 0.55);
+  text(ctx, HOWTO, W / 2, 637, 14, '#ffe9c4', 600, 'center');
+}
+
+// --- Build menu (open on a pad) ---
+// Returns the clickable rects for main.js: { rows: [{y,h,type|action}], close }.
+export function drawBuildMenu(ctx, game) {
+  if (game.selectedPad < 0) return null;
+  const pad = PADS[game.selectedPad];
+  const bell = game.padBell(game.selectedPad);
+  const w = 380;
+  // Keep clear of the left info panel (x 14..282) and of the canvas edge.
+  let x = Math.min(Math.max(292, pad.x - w / 2), W - w - 8);
+  let y = Math.min(Math.max(130, pad.y - 190), 600 - 260);
+  const rows = [];
+  if (!bell) {
+    const h = 44 + BELL_ORDER.length * 44 + 30;
+    panel(ctx, x, y, w, h, 0.88);
+    text(ctx, 'RUNE PAD — CHOOSE A BELL', x + 14, y + 28, 15, '#ffd76a');
+    let ry = y + 44;
+    for (const type of BELL_ORDER) {
+      const t = BELL_TYPES[type];
+      const afford = game.gold >= t.cost;
+      ctx.save();
+      ctx.fillStyle = game.menuType === type ? 'rgba(255,215,106,0.16)' : 'rgba(255,255,255,0.05)';
+      roundRect(ctx, x + 8, ry, w - 16, 40, 6);
+      ctx.fill();
+      ctx.restore();
+      ctx.fillStyle = t.color;
+      ctx.beginPath();
+      ctx.arc(x + 26, ry + 20, 7, 0, Math.PI * 2);
+      ctx.fill();
+      text(ctx, `${t.name} — ${t.cost}g`, x + 42, ry + 18, 15, afford ? '#ffffff' : '#8a84a8');
+      text(ctx, t.role, x + 42, ry + 34, 11, '#b9b3d6', 600);
+      rows.push({ y: ry, h: 40, type, afford });
+      ry += 44;
     }
-    for (const s of smokes) {
-      if (!s.alive) continue;
-      ctx.fillStyle = 'rgba(200,200,200,0.5)';
-      ctx.beginPath(); ctx.arc(X(s.pos.x), Z(s.pos.z), s.radius * sx * 0.6, 0, Math.PI * 2); ctx.fill();
-    }
-    const now = performance.now();
-    this.blips = this.blips.filter((b) => b.until > now);
-    for (const b of this.blips) {
-      const pulse = 3 + Math.sin(now / 120) * 1.5;
-      ctx.strokeStyle = b.color; ctx.lineWidth = 2;
-      ctx.beginPath(); ctx.arc(X(b.x), Z(b.z), 4 + pulse, 0, Math.PI * 2); ctx.stroke();
-    }
-    for (const a of actors) {
-      if (a.dead) continue;
-      if (a.isPlayer) {
-        ctx.save();
-        ctx.translate(X(a.pos.x), Z(a.pos.z));
-        ctx.rotate(-a.yaw);
-        ctx.fillStyle = '#ffffff';
-        ctx.beginPath(); ctx.moveTo(0, -6); ctx.lineTo(4.5, 5); ctx.lineTo(-4.5, 5); ctx.closePath(); ctx.fill();
-        ctx.restore();
-      } else if (a.team === player.team) {
-        ctx.fillStyle = '#58d68d';
-        ctx.beginPath(); ctx.arc(X(a.pos.x), Z(a.pos.z), 3.5, 0, Math.PI * 2); ctx.fill();
-      } else if (a.seen) {
-        ctx.fillStyle = '#ff3b30';
-        ctx.beginPath(); ctx.arc(X(a.pos.x), Z(a.pos.z), 3.5, 0, Math.PI * 2); ctx.fill();
-      }
-    }
-    this.el.radarLabel.textContent = mapDef.name.toUpperCase();
+    text(ctx, 'Click a bell to place it — Esc closes', x + 14, y + h - 10, 12, '#8a84a8', 600);
+    return { x, y, w, h, rows, close: { x: x + w - 30, y: y + 8, w: 22, h: 22 } };
   }
+  // Bell already here: upgrade / sell.
+  const t = BELL_TYPES[bell.type];
+  const upCost = Math.round(t.cost * UPGRADE_MULT);
+  const sellGain = Math.round(bell.invested * SELL_REFUND);
+  const h = 170;
+  panel(ctx, x, y, w, h, 0.88);
+  text(ctx, `${t.name} — Lv ${bell.level}${bell.muted ? '  ·  MUTED' : ''}`, x + 14, y + 28, 16, t.color);
+  text(ctx, t.role, x + 14, y + 50, 12, '#b9b3d6', 600);
+  text(ctx, `Damage ${Math.round(t.damage * (bell.level === 2 ? 1.5 : 1))}  ·  Radius ${Math.round(t.radius * (bell.level === 2 ? 1.2 : 1))}  ·  every ${t.interval}s`, x + 14, y + 72, 13, '#ffffff', 600);
+  const buy = { x: x + 14, y: y + 88, w: 170, h: 34, action: 'upgrade', afford: bell.level === 1 && game.gold >= upCost };
+  const sell = { x: x + 196, y: y + 88, w: 170, h: 34, action: 'sell', afford: true };
+  for (const b of [buy, sell]) {
+    ctx.save();
+    ctx.fillStyle = b.action === 'upgrade' ? (b.afford ? '#2f7a4a' : 'rgba(255,255,255,0.08)') : '#5a2d12';
+    ctx.strokeStyle = b.action === 'upgrade' ? '#7dff9a' : '#ff8a2a';
+    ctx.lineWidth = 1;
+    roundRect(ctx, b.x, b.y, b.w, b.h, 6);
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+    text(ctx, b.action === 'upgrade' ? (bell.level === 2 ? 'MAX LEVEL' : `UPGRADE — ${upCost}g`) : `SELL +${sellGain}g`, b.x + b.w / 2, b.y + 22, 13, '#ffffff', 800, 'center');
+  }
+  text(ctx, 'Click a button — Esc closes', x + 14, y + h - 12, 12, '#8a84a8', 600);
+  rows.push(buy, sell);
+  return { x, y, w, h, rows, close: { x: x + w - 30, y: y + 8, w: 22, h: 22 } };
+}
 
-  showDeploy(mapName, planLabel, role, sensitivity, onStart, onLastStand) {
-    const d = this.el.deploy;
-    d.classList.add('show');
-    d.querySelector('.mapName').textContent = mapName;
-    d.querySelector('.planLine').textContent = planLabel;
-    d.querySelector('.roleLine').textContent = 'Your role: ' + role;
-    const slider = d.querySelector('#sens');
-    slider.value = sensitivity;
-    slider.oninput = () => { this.sensitivity = parseFloat(slider.value); };
-    d.querySelector('.deployBtn').onclick = () => { d.classList.remove('show'); onStart(); };
-    const lsBtn = d.querySelector('.lsBtn');
-    if (lsBtn && onLastStand) lsBtn.onclick = () => { d.classList.remove('show'); onLastStand(); };
-  }
+// --- Title screen ---
+export function drawTitle(ctx, game) {
+  ctx.save();
+  ctx.fillStyle = 'rgba(12, 8, 32, 0.45)';
+  ctx.fillRect(0, 0, W, H);
+  ctx.restore();
+  text(ctx, 'CARILLON', W / 2, 150, 84, '#ffd76a', 800, 'center');
+  text(ctx, 'An acoustic tower defence — seven nights, one Great Bell', W / 2, 186, 20, '#ffe9c4', 600, 'center');
+  text(ctx, 'The fog-wraiths march to silence the Great Bell. Your bells answer.', W / 2, 214, 16, '#c9a5ff', 600, 'center');
+  // HOW TO PLAY panel.
+  const px = W / 2 - 360;
+  const py = 250;
+  panel(ctx, px, py, 720, 208, 0.82);
+  text(ctx, 'HOW TO PLAY', px + 24, py + 34, 19, '#ffd76a');
+  const lines = [
+    '1.  Place bells on the glowing rune pads beside the road.',
+    '2.  Each bell rings — its sound ring damages every wraith it crosses.',
+    '3.  Two rings striking one wraith together are a CHORD — double damage.',
+    '4.  Pip the fox nips the leading wraith. If one reaches the belfry,',
+    '     the Great Bell loses Voice — at zero, you lose.',
+  ];
+  lines.forEach((l, i) => text(ctx, l, px + 24, py + 66 + i * 26, 17, '#ffffff', 600));
+  text(ctx, 'Click a rune pad to build  ·  Keys 1–5 pick a bell  ·  Space starts the night', W / 2, 496, 15, '#b9b3d6', 600, 'center');
+  // START button.
+  const bx = W / 2 - 130;
+  const by = 530;
+  ctx.save();
+  ctx.fillStyle = '#2f7a4a';
+  ctx.strokeStyle = '#7dff9a';
+  ctx.lineWidth = 2;
+  roundRect(ctx, bx, by, 260, 56, 10);
+  ctx.fill();
+  ctx.stroke();
+  ctx.restore();
+  text(ctx, '▶  START — NIGHT 1', W / 2, by + 36, 22, '#ffffff', 800, 'center');
+  return { start: { x: bx, y: by, w: 260, h: 56 } };
+}
 
-  showBuy(money, loadout, onBuy, onClose) {
-    const b = this.el.buy;
-    const items = [
-      { key: '1', name: 'Kestrel-7', price: 2700, id: 'kestrel' },
-      { key: '2', name: 'Bastion-4', price: 2900, id: 'bastion' },
-      { key: '3', name: 'Raptor-9', price: 1500, id: 'raptor' },
-      { key: '4', name: 'Anvil .50', price: 700, id: 'anvil' },
-      { key: '5', name: 'Armor', price: 650, id: 'armor' },
-      { key: '6', name: 'Armor + Helmet', price: 1000, id: 'helmet' },
-      { key: '7', name: 'Defuse Kit', price: 400, id: 'kit' },
-      { key: '8', name: 'Smoke ×1', price: 300, id: 'smoke' },
-      { key: '9', name: 'Flash ×1', price: 200, id: 'flash' },
-    ];
-    b.querySelector('.buyMoney').textContent = 'Money: $' + money;
-    b.querySelector('.buyGrid').innerHTML = items.map((it) => {
-      const owned = it.id === 'kestrel' || it.id === 'bastion' ? loadout.some((w) => w.id === it.id) : false;
-      const afford = money >= it.price;
-      return `<div class="buyItem${afford ? '' : ' poor'}${owned ? ' owned' : ''}" data-id="${it.id}">
-        <span class="key">${it.key}</span><span class="buyName">${it.name}</span><span class="buyPrice">$${it.price}</span></div>`;
-    }).join('');
-    b.classList.add('show');
-    b.querySelectorAll('.buyItem').forEach((el) => {
-      el.onclick = () => onBuy(el.dataset.id);
-    });
-    this._buyHandler = (e) => {
-      const map = { Digit1: 'kestrel', Digit2: 'bastion', Digit3: 'raptor', Digit4: 'anvil', Digit5: 'armor', Digit6: 'helmet', Digit7: 'kit', Digit8: 'smoke', Digit9: 'flash' };
-      if (map[e.code]) onBuy(map[e.code]);
-      if (e.code === 'KeyB' || e.code === 'Escape') { e.stopPropagation(); this.hideBuy(); }
-    };
-    document.addEventListener('keydown', this._buyHandler);
-    this._onCloseBuy = onClose;
-  }
-  hideBuy() {
-    this.el.buy.classList.remove('show');
-    if (this._buyHandler) document.removeEventListener('keydown', this._buyHandler);
-    if (this._onCloseBuy) this._onCloseBuy();
-  }
-
-  showScoreboard(rows, scoreA, scoreD) {
-    const s = this.el.scoreboard;
-    s.querySelector('.sbScore').textContent = `Ember Jackals ${scoreA} — ${scoreD} Harbor Wardens`;
-    s.querySelector('tbody').innerHTML = rows.map((r) =>
-      `<tr class="${r.isPlayer ? 'me' : ''}"><td>${r.name}</td><td>${r.team}</td><td>${r.kills}</td><td>${r.deaths}</td><td>$${r.money}</td></tr>`).join('');
-    s.classList.add('show');
-  }
-  hideScoreboard() { this.el.scoreboard.classList.remove('show'); }
-
-  showAAR(summary, won, onAgain, onSwitch, onWave, extra) {
-    const a = this.el.aar;
-    a.querySelector('.aarResult').textContent = won ? 'VICTORY' : 'DEFEAT';
-    a.querySelector('.aarResult').classList.toggle('won', won);
-    a.querySelector('.aarRank').textContent = summary.rank;
-    const row = (k, v) => `<div class="aarRow"><span>${k}</span><b>${v}</b></div>`;
-    a.querySelector('.aarStats').innerHTML =
-      (extra || '') +
-      row('Accuracy', (summary.accuracy * 100).toFixed(1) + '%') +
-      row('Headshot share', (summary.headshotShare * 100).toFixed(1) + '%') +
-      row('Kills', summary.kills) +
-      row('Damage dealt / taken', `${summary.damageDealt} / ${summary.damageTaken}`) +
-      row('Utility efficiency', (summary.parts.utility).toFixed(1) + ' / 10') +
-      row('Clear time', summary.clearTime.toFixed(1) + ' s') +
-      row('Composite', summary.composite.toFixed(1) + ' / 100');
-    a.classList.add('show');
-    a.querySelector('.againBtn').onclick = () => { a.classList.remove('show'); onAgain(); };
-    a.querySelector('.switchBtn').onclick = () => { a.classList.remove('show'); onSwitch(); };
-    a.querySelector('.waveBtn').onclick = () => { a.classList.remove('show'); onWave(); };
-  }
+// --- Results screen ---
+export function drawResults(ctx, game) {
+  ctx.save();
+  ctx.fillStyle = 'rgba(12, 8, 32, 0.55)';
+  ctx.fillRect(0, 0, W, H);
+  ctx.restore();
+  const win = game.result === 'victory';
+  const px = W / 2 - 330;
+  const py = 120;
+  panel(ctx, px, py, 660, 420, 0.88);
+  text(ctx, win ? 'VICTORY — THE GREAT PEAL RINGS OUT' : 'DEFEAT — THE BELLS FALL SILENT', W / 2, py + 56, 30, win ? '#ffd76a' : '#ff8a8a', 800, 'center');
+  text(ctx, win ? 'All seven nights held. THE HUSH is silenced.' : `The fog reached the belfry on night ${Math.max(1, game.night)}.`, W / 2, py + 88, 16, '#ffe9c4', 600, 'center');
+  const stats = [
+    ['Nights held', `${game.nightsHeld} / 7`],
+    ['Wraiths silenced', `${game.kills}`],
+    ['Chords struck', `${game.chords}`],
+    ["Pip's nips", `${game.nips}`],
+    ['Voice remaining', `${game.voice}%`],
+  ];
+  stats.forEach(([label, value], i) => {
+    const y = py + 140 + i * 34;
+    text(ctx, label, px + 60, y, 18, '#b9b3d6', 600);
+    text(ctx, value, px + 600, y, 18, '#ffffff', 800, 'right');
+  });
+  text(ctx, `GRADE ${game.grade()}`, W / 2, py + 340, 44, win ? '#ffd76a' : '#ff8a8a', 800, 'center');
+  const bx = W / 2 - 130;
+  const by = py + 372;
+  ctx.save();
+  ctx.fillStyle = '#2f7a4a';
+  ctx.strokeStyle = '#7dff9a';
+  ctx.lineWidth = 2;
+  roundRect(ctx, bx, by, 260, 52, 10);
+  ctx.fill();
+  ctx.stroke();
+  ctx.restore();
+  text(ctx, '↻  PLAY AGAIN', W / 2, by + 34, 20, '#ffffff', 800, 'center');
+  return { again: { x: bx, y: by, w: 260, h: 52 } };
 }
